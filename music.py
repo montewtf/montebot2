@@ -7,8 +7,9 @@ import yt_dlp
 import requests
 import urllib.parse, urllib.request
 import re
+import time
 
-queues = {}
+sessions = {}
 yt_dl_options = {"format": "bestaudio/best"}
 ytdl = yt_dlp.YoutubeDL(yt_dl_options)
 ffmpeg_options = {'options': '-vn -sn -filter:a "volume=0.1"'}
@@ -54,21 +55,46 @@ class ServerSession:
         print(self.queue[0].audio_source)
         print(self.voice_client)
         self.voice_client.play(self.queue[0].audio_source, after=lambda e=None: asyncio.run(self.after_playing(interaction, e)))
-        print('check: done_playing(broke)')
+        self.queue.pop(0)
+        print('check: done_playing')
         
     async def after_playing(self, interaction, error):
         if error:
             raise error
-        else:
+        elif self.voice_client.is_connected():
+            print('blahblah1')
             if self.queue:
+                print('blahblah2')
                 await self.play_next(interaction)
+            '''
+            else:
+                print('blahblah3')
+                self.timeout = timeout = time.time()
+                print(str(self.timeout)+' '+str(timeout))
+                time.sleep(5)
+                print(str(self.timeout)+' '+str(timeout))
+                print(self.voice_client.is_playing())
+                if self.voice_client.is_connected() and not self.voice_client.is_playing() and self.timeout == timeout:
+                    print('blah')
+                    await disconnect(interaction.guild_id)
+                    print('blah2')
+            '''
                 
     async def play_next(self, interaction):
-        self.queue.pop(0)
         if self.queue:
-            await self.voice_client.play(self.queue[0].audio_source, after=lambda e=None: asyncio.run(self.after_playing(interaction, e)))
+            self.voice_client.play(self.queue[0].audio_source, after=lambda e=None: asyncio.run(self.after_playing(interaction, e)))
+            self.queue.pop(0)
             
 sessions: Dict[int, ServerSession] = {}
+
+async def disconnect(guildid):
+        voice_client = sessions[guildid].voice_client
+        print(voice_client.is_connected())
+        await voice_client.disconnect()
+        print(sessions)
+        print(guildid)
+        del sessions[guildid]
+        print(sessions)
 
 class Music(commands.Cog):
     def __init__(self, bot):
@@ -85,14 +111,12 @@ class Music(commands.Cog):
             interaction.response.send_message(f'Failed to connect to voice channel {interaction.user.voice.channel.name}.')
     
     @app_commands.command(name="stop")
-    async def disconnect(self, interaction: discord.Interaction):
+    async def stop(self, interaction: discord.Interaction):
         guildid = interaction.guild_id
-        if guildid in sessions:
+        if guildid in sessions: 
             voice_client = sessions[guildid].voice_client
-            await voice_client.disconnect()
+            await disconnect(guildid)
             await interaction.response.send_message(f'Disconnected from {voice_client.channel.name}.')
-            voice_client.cleanup()
-            del sessions[guildid]
     
     @app_commands.command(name='skip')
     async def skip(self, interaction: discord.Interaction):
@@ -150,6 +174,6 @@ class Music(commands.Cog):
         if not session.voice_client.is_playing() and len(session.queue) <= 1:
             print('check: about to start playing')
             await session.start_playing(interaction)
-
+    
 async def setup(bot):
     await bot.add_cog(Music(bot))

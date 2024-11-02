@@ -26,19 +26,19 @@ async def on_ready():
 @commands.check(are_u_monte)
 async def load(ctx, extension):
     await bot.load_extension(extension)
-    print(extension+" loaded")
+    await ctx.send(extension+" loaded")
     
 @bot.command(hidden=True)
 @commands.check(are_u_monte)
 async def unload(ctx, extension):
     await bot.unload_extension(extension)
-    print(extension+" unloaded")
+    await ctx.send(extension+" unloaded")
     
 @bot.command(hidden=True)
 @commands.check(are_u_monte)
 async def reload(ctx, extension):
     await bot.reload_extension(extension)
-    print(extension+" reloaded")
+    await ctx.send(extension+" reloaded")
     
 @bot.command(hidden=True)
 @commands.check(are_u_monte)
