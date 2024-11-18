@@ -8,6 +8,8 @@ import requests
 import urllib.parse, urllib.request
 import re
 import time
+import os
+from threading import Event
 
 sessions = {}
 yt_dl_options = {"format": "bestaudio/best"}
@@ -25,76 +27,96 @@ class YTDLSource:
         return f'{self.title} `{self.url}`'
         
     @classmethod
-    async def from_url(cls, url, *, loop=None, stream=False):
-        loop = loop or asyncio.get_event_loop()
-        data = await loop.run_in_executor(None, lambda: ytdl.extract_info(url, download=not stream))
-        filename = data['url'] if stream else ytdl.prepare_filename(data)
+    async def from_url(cls, data):
+        filename = ytdl.prepare_filename(data)
         return cls(discord.FFmpegOpusAudio(filename, **ffmpeg_options), data)
 
+        '''
+        data = await loop.run_in_executor(None, lambda: ytdl.extract_info(url, download=True))
+        source_list = []
+        if 'entries' in data:
+            for e in data['entries']:
+                e['url']
+                filename = ytdl.prepare_filename(e)
+                source_list.append(cls(discord.FFmpegOpusAudio(filename, **ffmpeg_options), e))
+        else:
+            filename = ytdl.prepare_filename(data)
+            source_list.append(cls(discord.FFmpegOpusAudio(filename, **ffmpeg_options), data))
+        return source_list
+        '''
+
 class ServerSession:
-    def __init__(self, guild_id, voice_client):
+    def __init__(self, guild_id, voice_client, bot):
         self.guild_id: int = guild_id
         self.voice_client: discord.VoiceClient = voice_client
+        self.bot = bot
         self.queue: List[YTDLSource] = []
+        self.current = None
 
     def display_queue(self) -> str:
-        currently_playing = f'Currently playing: 0. {self.queue[0]}'
-        return currently_playing + '\n' + '\n'.join([f'{i + 1}. {s}' for i, s in enumerate(self.queue[1:])])
+        currently_playing = f'**Currently playing:** \n{self.current}'
+        return currently_playing + '\n**Queue:**\n' + '\n'.join([f'{i + 1}. {s}' for i, s in enumerate(self.queue)])
         
     async def add_to_queue(self, interaction, url):
-        print('check: in add_to_queue')
-        yt_source = await YTDLSource.from_url(url, loop=None, stream=False)
-        if self.voice_client.is_playing():
-            await interaction.followup.send(f'Added to queue: {yt_source.title} #{len(self.queue)}')
-        print('check: made yt_source')
-        self.queue.append(yt_source)
+        loop = asyncio.get_event_loop()
+        data = await loop.run_in_executor(None, lambda: ytdl.extract_info(url, download=True))
+        sources_added = []
+        if 'entries' in data:
+            if not self.voice_client.is_playing():
+                self.queue.append(await YTDLSource.from_url(data['entries'].pop(0)))
+                await self.start_playing(interaction)
+            for e in data['entries']:
+                s = await YTDLSource.from_url(e)
+                self.queue.append(s)
+                sources_added.append(s.title)
+        else:
+            single_source = await YTDLSource.from_url(url)
+            self.queue.append(single_source)
+            if not self.voice_client.is_playing():
+                await self.start_playing(interaction)
+            else:
+                sources_added.append(single_source.title)
+        if sources_added:
+            queue_string = '\n* ' + '\n* '.join(sources_added)
+            await interaction.followup.send(f'Added to queue:{queue_string}')
         print('check: added to queue')
             
     async def start_playing(self, interaction):
         print('check: in start_playing')
-        print(self.queue[0].audio_source)
-        print(self.voice_client)
-        self.voice_client.play(self.queue[0].audio_source, after=lambda e=None: asyncio.run(self.after_playing(interaction, e)))
-        self.queue.pop(0)
+        self.voice_client.play(self.queue[0].audio_source, after=lambda e=None: asyncio.run_coroutine_threadsafe(self.after_playing(interaction, e), self.bot.loop))
+        self.current = self.queue.pop(0)
         print('check: done_playing')
         
     async def after_playing(self, interaction, error):
         if error:
             raise error
         elif self.voice_client.is_connected():
-            print('blahblah1')
             if self.queue:
-                print('blahblah2')
                 await self.play_next(interaction)
-            '''
             else:
-                print('blahblah3')
-                self.timeout = timeout = time.time()
-                print(str(self.timeout)+' '+str(timeout))
-                time.sleep(5)
-                print(str(self.timeout)+' '+str(timeout))
-                print(self.voice_client.is_playing())
-                if self.voice_client.is_connected() and not self.voice_client.is_playing() and self.timeout == timeout:
-                    print('blah')
+                self.heartbeat = heartbeat = time.time()
+                await asyncio.sleep(30)
+                if self.voice_client.is_connected() and not self.voice_client.is_playing() and self.heartbeat == heartbeat:
                     await disconnect(interaction.guild_id)
-                    print('blah2')
-            '''
                 
     async def play_next(self, interaction):
         if self.queue:
-            self.voice_client.play(self.queue[0].audio_source, after=lambda e=None: asyncio.run(self.after_playing(interaction, e)))
-            self.queue.pop(0)
+            self.voice_client.play(self.queue[0].audio_source, after=lambda e=None: asyncio.run_coroutine_threadsafe(self.after_playing(interaction, e), self.bot.loop))
+            self.current = self.queue.pop(0)
             
 sessions: Dict[int, ServerSession] = {}
 
+def clean_cache_files():
+    if not sessions:
+        for file in os.listdir():
+            if os.path.splitext(file)[1] in ['.webm', '.mp4', '.m4a', '.mp3', '.ogg']:
+                os.remove(file)
+
 async def disconnect(guildid):
         voice_client = sessions[guildid].voice_client
-        print(voice_client.is_connected())
         await voice_client.disconnect()
-        print(sessions)
-        print(guildid)
         del sessions[guildid]
-        print(sessions)
+        clean_cache_files()
 
 class Music(commands.Cog):
     def __init__(self, bot):
@@ -103,8 +125,8 @@ class Music(commands.Cog):
     async def join_server(self, interaction: discord.Interaction, channel):
         voice_client = await channel.connect()
         if voice_client.is_connected():
-            sessions[interaction.guild_id] = ServerSession(interaction.guild_id, voice_client)
-            print('check: connected')
+            sessions[interaction.guild_id] = ServerSession(interaction.guild_id, voice_client, self.bot)
+            print(f'check: connected to {interaction.guild_id}')
             return sessions[interaction.guild_id]
         else:
             print('check: notconnected')
@@ -125,11 +147,11 @@ class Music(commands.Cog):
             session = sessions[guildid]
             voice_client = session.voice_client
             if voice_client.is_playing():
-                if len(session.queue) > 1:
+                if len(session.queue) > 0:
                     await interaction.response.send_message('Skipped')
                     voice_client.stop()
                 else:
-                    await interaction.response.send_message('This is already the last item in the queue!')
+                    await interaction.response.send_message('This is already the last item in the queue! Use `/stop` to stop playing')
             
     @app_commands.command(name='queue')
     async def show_queue(self, interaction: discord.Interaction):
@@ -154,26 +176,20 @@ class Music(commands.Cog):
         try:
             requests.get(query)
         except (requests.ConnectionError, requests.exceptions.MissingSchema):
-            print('query1')
-            query_string = urllib.parse.urlencode({"search_query": query})
-            print('query2')
-            formatUrl = urllib.request.urlopen("https://www.youtube.com/results?" + query_string)
-            print('query3')
-            search_results = re.findall(r"watch\?v=(\S{11})", formatUrl.read().decode())
-            print('query4')
-            url = f'https://www.youtube.com/watch?v={search_results[0]}'
-            print('query5')
+            print('in query')
             if query.lower() == 'calypso':
                 url = 'https://www.youtube.com/watch?v=67Iw_OsuMcc'
+            else:
+                query_string = urllib.parse.urlencode({"search_query": query})
+                formatUrl = urllib.request.urlopen("https://www.youtube.com/results?" + query_string)
+                search_results = re.findall(r"((watch\?v=|shorts/)\S{11})", formatUrl.read().decode())
+                url = f'https://www.youtube.com/{search_results[0][0]}'
+            print('done query')
         else:
             print('check: is url')
             url = query
         await interaction.response.send_message(f'Attempting to play {url}')
         await session.add_to_queue(interaction, url)
-        print('check: added to queue2')
-        if not session.voice_client.is_playing() and len(session.queue) <= 1:
-            print('check: about to start playing')
-            await session.start_playing(interaction)
     
 async def setup(bot):
     await bot.add_cog(Music(bot))
