@@ -10,6 +10,7 @@ import re
 import time
 import os
 from threading import Event
+from pytube import Playlist
 
 sessions = {}
 yt_dl_options = {"format": "bestaudio/best"}
@@ -27,23 +28,11 @@ class YTDLSource:
         return f'{self.title} `{self.url}`'
         
     @classmethod
-    async def from_url(cls, data):
+    async def from_url(cls, url):
+        loop = asyncio.get_event_loop()
+        data = await loop.run_in_executor(None, lambda: ytdl.extract_info(url, download=True))
         filename = ytdl.prepare_filename(data)
         return cls(discord.FFmpegOpusAudio(filename, **ffmpeg_options), data)
-
-        '''
-        data = await loop.run_in_executor(None, lambda: ytdl.extract_info(url, download=True))
-        source_list = []
-        if 'entries' in data:
-            for e in data['entries']:
-                e['url']
-                filename = ytdl.prepare_filename(e)
-                source_list.append(cls(discord.FFmpegOpusAudio(filename, **ffmpeg_options), e))
-        else:
-            filename = ytdl.prepare_filename(data)
-            source_list.append(cls(discord.FFmpegOpusAudio(filename, **ffmpeg_options), data))
-        return source_list
-        '''
 
 class ServerSession:
     def __init__(self, guild_id, voice_client, bot):
@@ -58,28 +47,13 @@ class ServerSession:
         return currently_playing + '\n**Queue:**\n' + '\n'.join([f'{i + 1}. {s}' for i, s in enumerate(self.queue)])
         
     async def add_to_queue(self, interaction, url):
-        loop = asyncio.get_event_loop()
-        data = await loop.run_in_executor(None, lambda: ytdl.extract_info(url, download=True))
         sources_added = []
-        if 'entries' in data:
-            if not self.voice_client.is_playing():
-                self.queue.append(await YTDLSource.from_url(data['entries'].pop(0)))
-                await self.start_playing(interaction)
-            for e in data['entries']:
-                s = await YTDLSource.from_url(e)
-                self.queue.append(s)
-                sources_added.append(s.title)
+        yt_source = await YTDLSource.from_url(url)
+        self.queue.append(yt_source)
+        if not self.voice_client.is_playing():
+            await self.start_playing(interaction)
         else:
-            single_source = await YTDLSource.from_url(url)
-            self.queue.append(single_source)
-            if not self.voice_client.is_playing():
-                await self.start_playing(interaction)
-            else:
-                sources_added.append(single_source.title)
-        if sources_added:
-            queue_string = '\n* ' + '\n* '.join(sources_added)
-            await interaction.followup.send(f'Added to queue:{queue_string}')
-        print('check: added to queue')
+            return yt_source.title
             
     async def start_playing(self, interaction):
         print('check: in start_playing')
@@ -189,7 +163,21 @@ class Music(commands.Cog):
             print('check: is url')
             url = query
         await interaction.response.send_message(f'Attempting to play {url}')
-        await session.add_to_queue(interaction, url)
+        sources_added = []
+        if 'playlist' in url:
+            p = Playlist(url)
+            for p_url in p.video_urls:
+                source_title = await session.add_to_queue(interaction, p_url)
+                if source_title != None:
+                    sources_added.append(source_title)
+        else:
+            source_title = await session.add_to_queue(interaction, url)
+            if source_title != None:
+                sources_added.append(source_title)
+        if sources_added:
+            queue_string = '\n* ' + '\n* '.join(sources_added)
+            await interaction.followup.send(f'Added to queue:{queue_string}')
+        print('check: added to queue')
     
 async def setup(bot):
     await bot.add_cog(Music(bot))

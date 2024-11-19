@@ -6,6 +6,7 @@ import logging
 import asyncio
 import yt_dlp
 
+discord.utils.setup_logging()
 intents = discord.Intents.default()
 intents.message_content = True
 token = open("token.txt", "r").read()
@@ -21,7 +22,7 @@ def are_u_monte(ctx):
 @bot.event
 async def on_ready():
     print(f'{bot.user} is ready')
-
+    
 @bot.command(hidden=True)
 @commands.check(are_u_monte)
 async def load(ctx, extension):
